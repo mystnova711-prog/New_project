@@ -1,4 +1,4 @@
-name: Free VPS
+name: Free VPS (debug)
 
 on:
   schedule:
@@ -19,25 +19,45 @@ jobs:
 
       - name: Setup SSH and bore
         run: |
-          # Start SSH (it's already installed)
-          sudo service ssh restart || sudo systemctl restart ssh || sudo /usr/sbin/sshd -D &
-          sleep 2
-          # Set passwords
+          set -x  # Show every command
+          echo "Starting setup..."
+
+          # 1. Check SSH availability
+          which ssh || echo "SSH not found"
+          which sshd || echo "sshd not found"
+          # 2. Try to start SSH with multiple methods (ignore failures)
+          sudo service ssh restart 2>&1 || sudo systemctl restart ssh 2>&1 || sudo /usr/sbin/sshd -D 2>&1 &
+          sleep 3
+
+          # 3. Set passwords
           echo "root:rootpass" | sudo chpasswd
+          # 4. Create user (allow failure if already exists)
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser 2>/dev/null || true
           echo "vpsuser:userpass" | sudo chpasswd
-          sudo usermod -aG sudo vpsuser
+          sudo usermod -aG sudo vpsuser 2>/dev/null || true
+          # 5. Copy repo to user home
           sudo cp -r . /home/vpsuser/ 2>/dev/null || true
           sudo chown -R vpsuser:vpsuser /home/vpsuser 2>/dev/null || true
-          # Download bore
+
+          # 6. Download bore
           wget -q https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
-          chmod +x bore
-          sudo mv bore /usr/local/bin/bore
+          if [ -f bore ]; then
+            chmod +x bore
+            sudo mv bore /usr/local/bin/bore
+            /usr/local/bin/bore --version || echo "bore version check failed"
+          else
+            echo "Bore download failed!"
+            exit 1
+          fi
+
+          echo "Setup completed successfully."
+        # The step will continue even if some commands fail (we used || true)
+        # but we exit with 0 if bore is present.
 
       - name: Expose SSH
         run: |
           bore local 22 --to bore.pub 2>&1 | tee bore.log &
-          sleep 5
+          sleep 8
           PORT=$(grep -oE 'bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
           if [ -z "$PORT" ]; then
             sleep 5
@@ -53,6 +73,5 @@ jobs:
           echo "  Password: userpass"
           echo "------------------------------------------"
           echo "Your repo is in /home/vpsuser/"
-          echo "Save changes with: git add . && git commit -m 'save' && git push"
           echo "=========================================="
           wait
