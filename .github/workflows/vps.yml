@@ -19,16 +19,17 @@ jobs:
 
       - name: Setup SSH and bore
         run: |
-          # SSH is already installed – just start it
-          sudo service ssh start
+          # Start SSH (it's already installed)
+          sudo service ssh restart || sudo systemctl restart ssh || sudo /usr/sbin/sshd -D &
+          sleep 2
+          # Set passwords
           echo "root:rootpass" | sudo chpasswd
-          sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser || true
+          sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser 2>/dev/null || true
           echo "vpsuser:userpass" | sudo chpasswd
           sudo usermod -aG sudo vpsuser
-          sudo cp -r . /home/vpsuser/
-          sudo chown -R vpsuser:vpsuser /home/vpsuser
-
-          # Download bore binary (fast, no build)
+          sudo cp -r . /home/vpsuser/ 2>/dev/null || true
+          sudo chown -R vpsuser:vpsuser /home/vpsuser 2>/dev/null || true
+          # Download bore
           wget -q https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
           chmod +x bore
           sudo mv bore /usr/local/bin/bore
