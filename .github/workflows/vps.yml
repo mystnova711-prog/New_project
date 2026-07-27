@@ -1,4 +1,4 @@
-name: Free VPS (bore - Fixed)
+name: Free VPS (Static Address)
 
 on:
   workflow_dispatch:
@@ -15,22 +15,20 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Setup SSH and bore
+      - name: Setup SSH
         run: |
-          # 1. FORCE SSH to allow password authentication
+          # Allow Password Authentication
           sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
           sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
           sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
-          
-          # Allow root login just in case
           sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
           sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
 
-          # Restart SSH service to apply fixes
+          # Restart SSH
           sudo service ssh restart || sudo systemctl restart ssh || sudo /usr/sbin/sshd -D &
           sleep 3
 
-          # 2. Create the user and passwords
+          # Create users and passwords
           echo "root:rootpass" | sudo chpasswd
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser 2>/dev/null || true
           echo "vpsuser:userpass" | sudo chpasswd
@@ -38,40 +36,29 @@ jobs:
           sudo cp -r . /home/vpsuser/ || true
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # 3. Download the CORRECT bore archive, extract it, and install it
-          wget -q -O bore.tar.gz https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
-          tar -xf bore.tar.gz
-          chmod +x bore
-          sudo mv bore /usr/local/bin/bore
-
-      - name: Expose SSH and print address
+      - name: Install and Connect Tailscale
         run: |
-          # Start bore tunnel
-          bore local 22 --to bore.pub 2>&1 | tee bore.log &
-          BORE_PID=$!
+          # Install Tailscale
+          curl -fsSL https://tailscale.com/install.sh | sh
           
-          # Monitor the log to grab the correct port
-          while true; do
-            if grep -q 'listening at bore.pub' bore.log; then
-              PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
-              
-              # Write to Console (just in case)
-              echo "SSH ADDRESS: bore.pub:$PORT"
-              
-              # Write DIRECTLY to GitHub's UI Summary Page (Bypasses the buffer block)
-              echo "### 🚀 Your Free VPS is Live!" >> $GITHUB_STEP_SUMMARY
-              echo "**SSH Command:** \`ssh vpsuser@bore.pub -p $PORT\`" >> $GITHUB_STEP_SUMMARY
-              echo "---" >> $GITHUB_STEP_SUMMARY
-              echo "### 📱 Termius Login Info:" >> $GITHUB_STEP_SUMMARY
-              echo "- **Host:** \`bore.pub\`" >> $GITHUB_STEP_SUMMARY
-              echo "- **Port:** \`$PORT\`" >> $GITHUB_STEP_SUMMARY
-              echo "- **Username:** \`vpsuser\`" >> $GITHUB_STEP_SUMMARY
-              echo "- **Password:** \`userpass\`" >> $GITHUB_STEP_SUMMARY
-              
-              break
-            fi
-            sleep 1
-          done
+          # Connect using your Secret Key
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=github-vps
           
-          # Keep the job alive for 6 hours
-          wait $BORE_PID
+          # Give it a few seconds to register on the network
+          sleep 5
+          
+          # Grab your permanent Host Address
+          TS_DNS=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
+          
+          # Write DIRECTLY to GitHub's UI Summary Page
+          echo "### 🚀 Your STATIC VPS is Live!" >> $GITHUB_STEP_SUMMARY
+          echo "Because you used Tailscale, this address and port will **NEVER** change." >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### 📱 Termius Login Info:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Host:** \`$TS_DNS\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Port:** \`22\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Username:** \`vpsuser\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Password:** \`userpass\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Keep Alive for 6 Hours
+        run: sleep 21600
