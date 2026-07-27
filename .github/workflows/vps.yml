@@ -1,9 +1,10 @@
-name: Free VPS (bore – works)
+name: Free VPS (bore - Fixed)
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
+  schedule:
+    # Runs exactly every 6 hours to prevent Github from banning you for spam
+    - cron: '0 */6 * * *'
 
 jobs:
   vps:
@@ -13,42 +14,53 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
-          fetch-depth: 0
 
       - name: Setup SSH and bore
         run: |
-          # Start SSH
+          # 1. FORCE SSH to allow password authentication
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+          sudo sed -i 's/^#PasswordAuthentication yes/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+          sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true
+          
+          # Allow root login just in case
+          sudo sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+          sudo sed -i 's/^PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+
+          # Restart SSH service to apply fixes
           sudo service ssh restart || sudo systemctl restart ssh || sudo /usr/sbin/sshd -D &
           sleep 3
 
-          # User
+          # 2. Create the user and passwords
           echo "root:rootpass" | sudo chpasswd
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser 2>/dev/null || true
           echo "vpsuser:userpass" | sudo chpasswd
           sudo usermod -aG sudo vpsuser
-          sudo cp -r . /home/vpsuser/
+          sudo cp -r . /home/vpsuser/ || true
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Install bore – pre-built binary (fast, reliable)
-          wget -q -O bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
+          # 3. Download the CORRECT bore archive, extract it, and install it
+          wget -q -O bore.tar.gz https://github.com/ekzhang/bore/releases/download/v0.5.0/bore-v0.5.0-x86_64-unknown-linux-musl.tar.gz
+          tar -xf bore.tar.gz
           chmod +x bore
           sudo mv bore /usr/local/bin/bore
 
       - name: Expose SSH and print address
         run: |
-          # Start bore, pipe to file and stdout
+          # Start bore tunnel
           bore local 22 --to bore.pub 2>&1 | tee bore.log &
           BORE_PID=$!
-          # Monitor the log for the listening message
+          
+          # Monitor the log to grab the correct port
           while true; do
             if grep -q 'listening at bore.pub' bore.log; then
               PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
               echo "=========================================="
               echo "SSH ADDRESS: bore.pub:$PORT"
               echo "=========================================="
-              echo "Connect with Termius:"
+              echo "To connect from your Terminal/CMD:"
+              echo "  ssh vpsuser@bore.pub -p $PORT"
+              echo ""
+              echo "To connect with Termius app:"
               echo "  Host: bore.pub"
               echo "  Port: $PORT"
               echo "  Username: vpsuser"
@@ -60,5 +72,6 @@ jobs:
             fi
             sleep 1
           done
-          # Keep the job alive
+          
+          # Keep the job alive for 6 hours
           wait $BORE_PID
