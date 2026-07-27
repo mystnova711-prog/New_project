@@ -1,14 +1,14 @@
-name: Free VPS (bore)
+name: Free VPS (Cloudflare Tunnel)
 
 on:
   schedule:
-    - cron: '*/5 * * * *'   # restart every 5 min to stay alive
-  workflow_dispatch:        # manual start
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360    # 6 hours max
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repo
@@ -17,43 +17,57 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Install SSH, tools, and bore
+      - name: Install SSH, tools, and cloudflared
         run: |
           sudo apt update
           sudo apt install -y openssh-server curl wget jq git vim htop tmux
           sudo service ssh start
           echo "root:MyStrongPass123!" | sudo chpasswd
 
-          # Create a non‑root user with the repo as home
+          # Create non-root user with repo as home
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser
           echo "vpsuser:UserPass456!" | sudo chpasswd
           sudo usermod -aG sudo vpsuser
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Install bore (latest binary)
-          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
-          chmod +x bore
-          sudo mv bore /usr/local/bin/bore
+          # Install cloudflared
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared-linux-amd64
+          sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
 
-      - name: Expose SSH via bore
+      - name: Expose SSH via Cloudflare Tunnel (TCP)
         run: |
-          # Start bore in background, capture output
-          bore local 22 --to bore.pub 2>&1 | tee bore.log &
-          BORE_PID=$!
-          sleep 5
-          PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
-          if [ -z "$PORT" ]; then
-            # Wait a bit longer if the port isn't captured yet
-            sleep 3
-            PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
+          # Start cloudflared in background and capture output
+          cloudflared tunnel --url tcp://localhost:22 --no-chunked-encoding 2>&1 | tee cf.log &
+          sleep 8
+          # Extract the hostname and port from the logs
+          HOST=$(grep -oP 'https://\K[^ ]+\.trycloudflare\.com' cf.log | head -1)
+          if [ -z "$HOST" ]; then
+            echo "Could not find hostname. Retrying..."
+            sleep 5
+            HOST=$(grep -oP 'https://\K[^ ]+\.trycloudflare\.com' cf.log | head -1)
           fi
           echo "=========================================="
-          echo "SSH ADDRESS: bore.pub:$PORT"
+          echo "SSH ADDRESS: $HOST"
+          echo "Cloudflare will give you a random hostname like random-name.trycloudflare.com"
+          echo "You can connect using: ssh vpsuser@$HOST -p 22 (but Cloudflare requires a token, so use the 'cloudflared access' method, or use the quick tunnel with 'ssh -o ProxyCommand' - we'll simplify below)"
           echo "=========================================="
-          echo "Log in as: vpsuser (or root) with the passwords above."
-          # Keep the job alive (bore will keep running)
-          wait $BORE_PID
+          echo "For simple SSH, we'll use the built-in Cloudflare SSH access:"
+          echo "Run this in your terminal:"
+          echo "  ssh -o ProxyCommand='cloudflared access ssh --hostname $HOST' vpsuser@$HOST"
+          echo "Or, if you don't have cloudflared locally, use the TCP tunnel address directly:"
+          echo "Cloudflare's TCP tunnel gives you a hostname and port. To get the port, look for 'tcp://' in the logs."
+          echo "We'll now try to extract the port as well."
+
+          # Extract TCP endpoint (format: tcp://<host>:<port>)
+          TCP_ENDPOINT=$(grep -oP 'tcp://[^ ]+' cf.log | head -1)
+          if [ -n "$TCP_ENDPOINT" ]; then
+            echo "TCP endpoint: $TCP_ENDPOINT"
+          fi
+
+          # Keep the job alive (cloudflared will run in background)
+          wait
 
       - name: Keep alive (fallback)
         run: while true; do sleep 3600; done
