@@ -1,4 +1,4 @@
-name: Free VPS (bore from source)
+name: Free VPS (bore from source – verbose)
 
 on:
   schedule:
@@ -29,34 +29,45 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-      - name: Install Rust and build bore from source
+      - name: Build bore from source
         run: |
-          # Install Rust
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           source ~/.cargo/env
-          # Clone and build bore
           git clone https://github.com/ekzhang/bore.git
           cd bore
           cargo build --release
           sudo cp target/release/bore /usr/local/bin/bore
-          # Verify it's a valid binary
-          file /usr/local/bin/bore
+          /usr/local/bin/bore --version
 
-      - name: Expose SSH via bore
+      - name: Expose SSH via bore (with debug)
         run: |
-          /usr/local/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
+          # Start bore in background and pipe all output to a file
+          /usr/local/bin/bore local 22 --to bore.pub 2>&1 | tee bore.log &
           BORE_PID=$!
-          sleep 8
+          echo "Bore PID: $BORE_PID"
+          # Wait for a few seconds
+          sleep 10
+          # Check if process is still alive
           if ! kill -0 $BORE_PID 2>/dev/null; then
-            echo "Bore failed to start. Log:"
+            echo "Bore process died. Log contents:"
             cat bore.log
             exit 1
           fi
+          # Dump the log
+          echo "Current bore.log:"
+          cat bore.log
+          # Extract port from log
           PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
           if [ -z "$PORT" ]; then
-            echo "Waiting longer for port..."
+            # Wait a bit longer and try again
+            echo "Port not found yet, waiting another 5 seconds..."
             sleep 5
+            cat bore.log
             PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
+          fi
+          if [ -z "$PORT" ]; then
+            echo "ERROR: Could not extract port. Exiting."
+            exit 1
           fi
           echo "=========================================="
           echo "SSH ADDRESS: bore.pub:$PORT"
@@ -70,6 +81,7 @@ jobs:
           echo "Your repo is in /home/vpsuser/"
           echo "Save changes with: git add . && git commit -m 'save' && git push"
           echo "=========================================="
+          # Keep the job alive
           wait $BORE_PID
 
       - name: Keep alive (fallback)
