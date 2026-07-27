@@ -1,4 +1,4 @@
-name: Free VPS (opentunnel.com)
+name: Free VPS (bore)
 
 on:
   schedule:
@@ -17,7 +17,7 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Install SSH and opentunnel client
+      - name: Install SSH and bore
         run: |
           sudo apt update
           sudo apt install -y openssh-server curl wget git vim htop tmux
@@ -29,31 +29,34 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Download opentunnel client (Linux amd64)
-          wget -q https://github.com/opentunnel/opentunnel/releases/latest/download/opentunnel-linux-amd64
-          chmod +x opentunnel-linux-amd64
-          sudo mv opentunnel-linux-amd64 /usr/local/bin/opentunnel
+          # Download bore binary (official release v0.5.0)
+          wget -q https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
+          chmod +x bore
+          sudo mv bore /usr/local/bin/bore
 
-      - name: Expose SSH via opentunnel
+      - name: Expose SSH via bore
         run: |
-          # Run opentunnel in TCP mode, forwarding port 22
-          opentunnel tcp 22 > tunnel.log 2>&1 &
+          # Start bore and capture output
+          bore local 22 --to bore.pub 2>&1 | tee bore.log &
           sleep 5
-          # Extract the public address from the log (format: tcp://... or something)
-          ADDR=$(grep -oP 'tcp://[^ ]+' tunnel.log | head -1 | sed 's/tcp:\/\///')
-          if [ -z "$ADDR" ]; then
-            # Try another pattern
-            ADDR=$(grep -oP '[0-9a-z-]+\.opentunnel\.com:\d+' tunnel.log | head -1)
+          # Extract port: find "bore.pub:XXXXX" and take the number after :
+          PORT=$(grep -oE 'bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
+          if [ -z "$PORT" ]; then
+            echo "Port not found yet, waiting longer..."
+            sleep 5
+            PORT=$(grep -oE 'bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
           fi
           echo "=========================================="
-          echo "SSH ADDRESS: $ADDR"
+          echo "SSH ADDRESS: bore.pub:$PORT"
           echo "=========================================="
           echo "Connect with Termius:"
-          echo "  Host: $ADDR (or just the hostname part)"
-          echo "  Port: (if included in ADDR, otherwise default 22)"
+          echo "  Host: bore.pub"
+          echo "  Port: $PORT"
           echo "  Username: vpsuser"
           echo "  Password: userpass"
           echo "------------------------------------------"
           echo "Your repo is in /home/vpsuser/"
+          echo "Save changes with: git add . && git commit -m 'save' && git push"
           echo "=========================================="
+          # Keep job alive
           wait
