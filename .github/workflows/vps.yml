@@ -1,4 +1,4 @@
-name: Free VPS (bore – instant)
+name: Free VPS (bore – works)
 
 on:
   schedule:
@@ -31,29 +31,20 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Download bore
-          if ! curl -L -f -o bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore; then
-            echo "Pre-built failed, building..."
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source ~/.cargo/env
-            git clone https://github.com/ekzhang/bore.git
-            cd bore
-            cargo build --release
-            sudo cp target/release/bore /usr/local/bin/bore
-          else
-            chmod +x bore
-            sudo mv bore /usr/local/bin/bore
-          fi
+          # Install bore – pre-built binary (fast, reliable)
+          wget -q -O bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
+          chmod +x bore
+          sudo mv bore /usr/local/bin/bore
 
       - name: Expose SSH and print address
         run: |
-          # Start bore, pipe output to a file AND to stdout
+          # Start bore, pipe to file and stdout
           bore local 22 --to bore.pub 2>&1 | tee bore.log &
           BORE_PID=$!
-          # Use tail -f to monitor the log as it grows
-          timeout 15s tail -f bore.log | while read line; do
-            if echo "$line" | grep -q 'listening at bore.pub'; then
-              PORT=$(echo "$line" | grep -oE 'listening at bore\.pub:[0-9]+' | cut -d: -f2)
+          # Monitor the log for the listening message
+          while true; do
+            if grep -q 'listening at bore.pub' bore.log; then
+              PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
               echo "=========================================="
               echo "SSH ADDRESS: bore.pub:$PORT"
               echo "=========================================="
@@ -65,36 +56,9 @@ jobs:
               echo "------------------------------------------"
               echo "Your repo is in /home/vpsuser/"
               echo "=========================================="
-              # Kill the tail process (we already printed)
-              pkill -P $$ tail
               break
             fi
+            sleep 1
           done
-          # If we didn't get a port, fallback
-          if [ -z "$PORT" ]; then
-            echo "Bore didn't start. Killing and falling back to opentunnel..."
-            kill $BORE_PID 2>/dev/null || true
-            # Fallback opentunnel
-            wget -q https://github.com/opentunnel/opentunnel/releases/latest/download/opentunnel-linux-amd64
-            chmod +x opentunnel-linux-amd64
-            sudo mv opentunnel-linux-amd64 /usr/local/bin/opentunnel
-            opentunnel tcp 22 2>&1 | tee opentunnel.log &
-            OPID=$!
-            timeout 15s tail -f opentunnel.log | while read line; do
-              if echo "$line" | grep -qE '[0-9a-z-]+\.opentunnel\.com:[0-9]+'; then
-                ADDR=$(echo "$line" | grep -oE '[0-9a-z-]+\.opentunnel\.com:[0-9]+')
-                echo "=========================================="
-                echo "SSH ADDRESS: $ADDR"
-                echo "=========================================="
-                echo "Connect with Termius: $ADDR"
-                echo "User: vpsuser, Pass: userpass"
-                pkill -P $$ tail
-                break
-              fi
-            done
-            # Keep alive
-            while true; do sleep 3600; done
-          else
-            # Keep bore alive
-            wait $BORE_PID
-          fi
+          # Keep the job alive
+          wait $BORE_PID
