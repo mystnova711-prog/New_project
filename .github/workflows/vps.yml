@@ -1,4 +1,4 @@
-name: Free VPS (bore + fallback)
+name: Free VPS (bore)
 
 on:
   schedule:
@@ -17,13 +17,13 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Setup SSH and tools
+      - name: Setup SSH and bore
         run: |
           # Start SSH
           sudo service ssh restart || sudo systemctl restart ssh || sudo /usr/sbin/sshd -D &
           sleep 3
 
-          # Set user/pass
+          # User
           echo "root:rootpass" | sudo chpasswd
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser 2>/dev/null || true
           echo "vpsuser:userpass" | sudo chpasswd
@@ -31,59 +31,65 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Install bore and opentunnel (both)
-          # bore
-          curl -L -f -o bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore || {
-            echo "Pre-built bore download failed. Building from source..."
+          # Download bore (pre-built, fallback to build)
+          if ! curl -L -f -o bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore; then
+            echo "Pre-built failed, building from source..."
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source ~/.cargo/env
             git clone https://github.com/ekzhang/bore.git
             cd bore
             cargo build --release
             sudo cp target/release/bore /usr/local/bin/bore
-          }
-          chmod +x bore
-          sudo mv bore /usr/local/bin/bore
+          else
+            chmod +x bore
+            sudo mv bore /usr/local/bin/bore
+          fi
 
-          # opentunnel
-          wget -q https://github.com/opentunnel/opentunnel/releases/latest/download/opentunnel-linux-amd64
-          chmod +x opentunnel-linux-amd64
-          sudo mv opentunnel-linux-amd64 /usr/local/bin/opentunnel
-
-      - name: Expose SSH (bore with timeout, fallback to opentunnel)
+      - name: Expose SSH and print address
         run: |
-          # Try bore first with a 10-second timeout
-          echo "Starting bore..."
-          timeout 10s bore local 22 --to bore.pub 2>&1 | tee bore.log &
+          # Start bore, capture output to a file (with line buffering)
+          stdbuf -oL bore local 22 --to bore.pub > bore.log 2>&1 &
           BORE_PID=$!
-          sleep 12  # wait for bore to start (or timeout)
-          PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
-          if [ -n "$PORT" ]; then
+          # Wait for the "listening" message (max 10 seconds)
+          for i in {1..10}; do
+            if grep -q 'listening at bore.pub' bore.log; then
+              PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
+              break
+            fi
+            sleep 1
+          done
+          if [ -z "$PORT" ]; then
+            echo "Bore did not start. Killing and falling back to opentunnel."
+            kill $BORE_PID 2>/dev/null || true
+            # Fallback to opentunnel (install if needed)
+            wget -q https://github.com/opentunnel/opentunnel/releases/latest/download/opentunnel-linux-amd64
+            chmod +x opentunnel-linux-amd64
+            sudo mv opentunnel-linux-amd64 /usr/local/bin/opentunnel
+            opentunnel tcp 22 > opentunnel.log 2>&1 &
+            OPID=$!
+            sleep 8
+            ADDR=$(grep -oE '[0-9a-z-]+\.opentunnel\.com:[0-9]+' opentunnel.log | head -1)
+            if [ -z "$ADDR" ]; then
+              echo "Both bore and opentunnel failed."
+              exit 1
+            fi
+            echo "=========================================="
+            echo "SSH ADDRESS: $ADDR"
+            echo "=========================================="
+            # Keep job alive (opentunnel is running)
+            while true; do sleep 3600; done
+          else
             echo "=========================================="
             echo "SSH ADDRESS: bore.pub:$PORT"
             echo "=========================================="
-            echo "Connect with Termius: bore.pub:$PORT"
-            echo "User: vpsuser, Pass: userpass"
-            wait $BORE_PID
-          else
-            echo "bore failed or timed out. Switching to opentunnel..."
-            # Kill bore if still running
-            kill $BORE_PID 2>/dev/null || true
-            # Start opentunnel
-            opentunnel tcp 22 2>&1 | tee opentunnel.log &
-            OPID=$!
-            sleep 10
-            ADDR=$(grep -oE '[0-9a-z-]+\.opentunnel\.com:[0-9]+' opentunnel.log | head -1)
-            if [ -n "$ADDR" ]; then
-              echo "=========================================="
-              echo "SSH ADDRESS: $ADDR"
-              echo "=========================================="
-              echo "Connect with Termius: $ADDR"
-              echo "User: vpsuser, Pass: userpass"
-              wait $OPID
-            else
-              echo "Both bore and opentunnel failed."
-              cat opentunnel.log
-              exit 1
-            fi
+            echo "Connect with Termius:"
+            echo "  Host: bore.pub"
+            echo "  Port: $PORT"
+            echo "  Username: vpsuser"
+            echo "  Password: userpass"
+            echo "------------------------------------------"
+            echo "Your repo is in /home/vpsuser/"
+            echo "=========================================="
+            # Keep the job alive (bore is running)
+            while true; do sleep 3600; done
           fi
