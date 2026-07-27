@@ -1,4 +1,4 @@
-name: Free VPS (bore)
+name: Free VPS
 
 on:
   schedule:
@@ -17,32 +17,28 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Install SSH and bore
+      - name: Setup SSH and bore
         run: |
-          sudo apt update
-          sudo apt install -y openssh-server curl wget git vim htop tmux
+          # SSH is already installed – just start it
           sudo service ssh start
           echo "root:rootpass" | sudo chpasswd
-          sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser
+          sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser || true
           echo "vpsuser:userpass" | sudo chpasswd
           sudo usermod -aG sudo vpsuser
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Download bore binary (official release v0.5.0)
+          # Download bore binary (fast, no build)
           wget -q https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
           chmod +x bore
           sudo mv bore /usr/local/bin/bore
 
-      - name: Expose SSH via bore
+      - name: Expose SSH
         run: |
-          # Start bore and capture output
           bore local 22 --to bore.pub 2>&1 | tee bore.log &
           sleep 5
-          # Extract port: find "bore.pub:XXXXX" and take the number after :
           PORT=$(grep -oE 'bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
           if [ -z "$PORT" ]; then
-            echo "Port not found yet, waiting longer..."
             sleep 5
             PORT=$(grep -oE 'bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
           fi
@@ -58,5 +54,4 @@ jobs:
           echo "Your repo is in /home/vpsuser/"
           echo "Save changes with: git add . && git commit -m 'save' && git push"
           echo "=========================================="
-          # Keep job alive
           wait
