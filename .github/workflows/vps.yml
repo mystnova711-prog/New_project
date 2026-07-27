@@ -1,4 +1,4 @@
-name: Free VPS (bore fixed)
+name: Free VPS (bore from source)
 
 on:
   schedule:
@@ -17,13 +17,11 @@ jobs:
           persist-credentials: true
           fetch-depth: 0
 
-      - name: Install SSH and bore
+      - name: Install SSH and build tools
         run: |
           sudo apt update
-          sudo apt install -y openssh-server curl wget git vim htop tmux
+          sudo apt install -y openssh-server curl wget git vim htop tmux build-essential
           sudo service ssh start
-
-          # Set passwords
           echo "root:rootpass" | sudo chpasswd
           sudo useradd -m -d /home/vpsuser -s /bin/bash vpsuser
           echo "vpsuser:userpass" | sudo chpasswd
@@ -31,30 +29,32 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Download bore (latest version, v0.5.0)
-          curl -L -o bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore
-          chmod +x bore
+      - name: Install Rust and build bore from source
+        run: |
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source ~/.cargo/env
+          # Clone and build bore
+          git clone https://github.com/ekzhang/bore.git
+          cd bore
+          cargo build --release
+          sudo cp target/release/bore /usr/local/bin/bore
           # Verify it's a valid binary
-          file bore
-          # Move to /usr/local/bin for easier use
-          sudo mv bore /usr/local/bin/bore
+          file /usr/local/bin/bore
 
       - name: Expose SSH via bore
         run: |
-          # Start bore and log to a file
-          bore local 22 --to bore.pub > bore.log 2>&1 &
+          /usr/local/bin/bore local 22 --to bore.pub > bore.log 2>&1 &
           BORE_PID=$!
-          sleep 5
-          # If the process died, log the error
+          sleep 8
           if ! kill -0 $BORE_PID 2>/dev/null; then
             echo "Bore failed to start. Log:"
             cat bore.log
             exit 1
           fi
-          # Extract port from log
           PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
           if [ -z "$PORT" ]; then
-            echo "Could not extract port. Waiting longer..."
+            echo "Waiting longer for port..."
             sleep 5
             PORT=$(grep -oP 'listening on bore\.pub:\K[0-9]+' bore.log | head -1)
           fi
@@ -66,11 +66,10 @@ jobs:
           echo "  Port: $PORT"
           echo "  Username: vpsuser"
           echo "  Password: userpass"
-          echo ""
+          echo "------------------------------------------"
           echo "Your repo is in /home/vpsuser/"
           echo "Save changes with: git add . && git commit -m 'save' && git push"
           echo "=========================================="
-          # Keep job alive
           wait $BORE_PID
 
       - name: Keep alive (fallback)
