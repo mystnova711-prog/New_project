@@ -1,4 +1,4 @@
-name: Free VPS (bore)
+name: Free VPS (bore – instant)
 
 on:
   schedule:
@@ -31,9 +31,9 @@ jobs:
           sudo cp -r . /home/vpsuser/
           sudo chown -R vpsuser:vpsuser /home/vpsuser
 
-          # Download bore (pre-built, fallback to build)
+          # Download bore
           if ! curl -L -f -o bore https://github.com/ekzhang/bore/releases/download/v0.5.0/bore; then
-            echo "Pre-built failed, building from source..."
+            echo "Pre-built failed, building..."
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             source ~/.cargo/env
             git clone https://github.com/ekzhang/bore.git
@@ -47,49 +47,54 @@ jobs:
 
       - name: Expose SSH and print address
         run: |
-          # Start bore, capture output to a file (with line buffering)
-          stdbuf -oL bore local 22 --to bore.pub > bore.log 2>&1 &
+          # Start bore, pipe output to a file AND to stdout
+          bore local 22 --to bore.pub 2>&1 | tee bore.log &
           BORE_PID=$!
-          # Wait for the "listening" message (max 10 seconds)
-          for i in {1..10}; do
-            if grep -q 'listening at bore.pub' bore.log; then
-              PORT=$(grep -oE 'listening at bore\.pub:[0-9]+' bore.log | head -1 | cut -d: -f2)
+          # Use tail -f to monitor the log as it grows
+          timeout 15s tail -f bore.log | while read line; do
+            if echo "$line" | grep -q 'listening at bore.pub'; then
+              PORT=$(echo "$line" | grep -oE 'listening at bore\.pub:[0-9]+' | cut -d: -f2)
+              echo "=========================================="
+              echo "SSH ADDRESS: bore.pub:$PORT"
+              echo "=========================================="
+              echo "Connect with Termius:"
+              echo "  Host: bore.pub"
+              echo "  Port: $PORT"
+              echo "  Username: vpsuser"
+              echo "  Password: userpass"
+              echo "------------------------------------------"
+              echo "Your repo is in /home/vpsuser/"
+              echo "=========================================="
+              # Kill the tail process (we already printed)
+              pkill -P $$ tail
               break
             fi
-            sleep 1
           done
+          # If we didn't get a port, fallback
           if [ -z "$PORT" ]; then
-            echo "Bore did not start. Killing and falling back to opentunnel."
+            echo "Bore didn't start. Killing and falling back to opentunnel..."
             kill $BORE_PID 2>/dev/null || true
-            # Fallback to opentunnel (install if needed)
+            # Fallback opentunnel
             wget -q https://github.com/opentunnel/opentunnel/releases/latest/download/opentunnel-linux-amd64
             chmod +x opentunnel-linux-amd64
             sudo mv opentunnel-linux-amd64 /usr/local/bin/opentunnel
-            opentunnel tcp 22 > opentunnel.log 2>&1 &
+            opentunnel tcp 22 2>&1 | tee opentunnel.log &
             OPID=$!
-            sleep 8
-            ADDR=$(grep -oE '[0-9a-z-]+\.opentunnel\.com:[0-9]+' opentunnel.log | head -1)
-            if [ -z "$ADDR" ]; then
-              echo "Both bore and opentunnel failed."
-              exit 1
-            fi
-            echo "=========================================="
-            echo "SSH ADDRESS: $ADDR"
-            echo "=========================================="
-            # Keep job alive (opentunnel is running)
+            timeout 15s tail -f opentunnel.log | while read line; do
+              if echo "$line" | grep -qE '[0-9a-z-]+\.opentunnel\.com:[0-9]+'; then
+                ADDR=$(echo "$line" | grep -oE '[0-9a-z-]+\.opentunnel\.com:[0-9]+')
+                echo "=========================================="
+                echo "SSH ADDRESS: $ADDR"
+                echo "=========================================="
+                echo "Connect with Termius: $ADDR"
+                echo "User: vpsuser, Pass: userpass"
+                pkill -P $$ tail
+                break
+              fi
+            done
+            # Keep alive
             while true; do sleep 3600; done
           else
-            echo "=========================================="
-            echo "SSH ADDRESS: bore.pub:$PORT"
-            echo "=========================================="
-            echo "Connect with Termius:"
-            echo "  Host: bore.pub"
-            echo "  Port: $PORT"
-            echo "  Username: vpsuser"
-            echo "  Password: userpass"
-            echo "------------------------------------------"
-            echo "Your repo is in /home/vpsuser/"
-            echo "=========================================="
-            # Keep the job alive (bore is running)
-            while true; do sleep 3600; done
+            # Keep bore alive
+            wait $BORE_PID
           fi
